@@ -130,6 +130,7 @@ export default function JournalCalendar() {
 	// Handle date selection
 	const handleDateSelect = async (date: Date | undefined) => {
 		if (!date) return;
+		// fetchAllEntries(); // Fetch all entries again to ensure we have the latest data
 
 		const formattedDate = formatDateForAPI(date);
 		console.log(
@@ -145,6 +146,9 @@ export default function JournalCalendar() {
 		// If selecting the same date again, just open the dialog with existing entries
 		if (formattedDate === lastSelectedDate && !isDialogOpen) {
 			console.log('Re-selected same date, reopening dialog');
+
+			fetchAllEntries(); // Fetch all entries again to ensure we have the latest data
+
 			setIsDialogOpen(true);
 			return;
 		}
@@ -156,6 +160,7 @@ export default function JournalCalendar() {
 		if (entriesByDate[formattedDate]) {
 			console.log('Using cached entries for date:', formattedDate);
 			setSelectedEntries(entriesByDate[formattedDate]);
+			fetchAllEntries();
 			setIsDialogOpen(true);
 			return;
 		}
@@ -263,6 +268,7 @@ export default function JournalCalendar() {
 		if (!open) {
 			console.log('Dialog closed, resetting lastSelectedDate');
 			setLastSelectedDate('');
+			setSelectedDate(undefined);
 		}
 	};
 

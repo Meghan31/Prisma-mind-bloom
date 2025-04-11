@@ -1,7 +1,7 @@
 // src/routes/journalRoutes.ts
 import { Express } from 'express';
 import jwt from 'jsonwebtoken';
-import { DatabaseTemplate } from '../databaseSupport/databaseTemplate';
+import { prisma } from '../lib/prisma';
 
 // Middleware to verify JWT token
 const authenticateToken = (req: any, res: any, next: any) => {
@@ -22,15 +22,12 @@ const authenticateToken = (req: any, res: any, next: any) => {
 	}
 };
 
-export const registerJournalRoutes = (
-	app: Express,
-	dbTemplate: DatabaseTemplate
-) => {
-	console.log('Registering journal routes'); // Debug log
+export const registerJournalRoutes = (app: Express) => {
+	console.log('Registering journal routes');
 
 	// Create a new journal entry
 	app.post('/api/journal', authenticateToken, async (req: any, res: any) => {
-		console.log('POST /api/journal received:', req.body); // Debug log
+		console.log('POST /api/journal received:', req.body);
 
 		try {
 			const { content, mood } = req.body;
@@ -42,36 +39,30 @@ export const registerJournalRoutes = (
 			}
 
 			// Get a random affirmation based on mood
-			const affirmations = await dbTemplate.query(
-				'SELECT * FROM affirmations WHERE mood_type = $1 ORDER BY RANDOM() LIMIT 1',
-				(row) => row,
-				mood
-			);
-
-			const affirmation = affirmations.length > 0 ? affirmations[0] : null;
-			const affirmationId = affirmation ? affirmation.id : null;
+			const affirmation = await prisma.affirmation.findFirst({
+				where: { mood_type: mood },
+				orderBy: { id: 'asc' }, // Using asc for deterministic ordering, for random use a different approach
+				take: 1,
+			});
 
 			// Insert journal entry
-			await dbTemplate.execute(
-				'INSERT INTO journal_entries (user_id, content, mood, affirmation_id, entry_date) VALUES ($1, $2, $3, $4, CURRENT_DATE)',
-				userId,
-				content,
-				mood,
-				affirmationId
-			);
-
-			// Get the newly created entry
-			const entries = await dbTemplate.query(
-				'SELECT * FROM journal_entries WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1',
-				(row) => row,
-				userId
-			);
+			const entry = await prisma.journalEntry.create({
+				data: {
+					user_id: userId,
+					content,
+					mood,
+					affirmation_id: affirmation?.id || null,
+					entry_date: new Date(
+						new Date().toLocaleString('en-US', { timeZone: 'America/Denver' })
+					),
+				},
+			});
 
 			// Return the entry with the affirmation
 			res.status(201).json({
 				message: 'Journal entry created successfully',
-				entry: entries[0],
-				affirmation: affirmation ? affirmation.content : null,
+				entry,
+				affirmation: affirmation?.content || null,
 			});
 		} catch (error) {
 			console.error('Journal entry creation error:', error);
@@ -81,24 +72,71 @@ export const registerJournalRoutes = (
 
 	// Get all journal entries for the logged-in user
 	app.get('/api/journal', authenticateToken, async (req: any, res: any) => {
-		console.log('GET /api/journal received'); // Debug log
+		console.log('GET /api/journal received');
 
 		try {
 			const userId = req.user.userId;
 
 			// Get all entries for the user with affirmations
-			const entries = await dbTemplate.query(
-				`SELECT j.*, a.content as affirmation_content, a.mood_type 
-         FROM journal_entries j 
-         LEFT JOIN affirmations a ON j.affirmation_id = a.id 
-         WHERE j.user_id = $1 
-         ORDER BY j.entry_date DESC`,
-				(row) => row,
-				userId
+			const entries = await prisma.journalEntry.findMany({
+				where: { user_id: userId },
+				include: {
+					affirmation: true,
+				},
+				orderBy: { entry_date: 'desc' },
+			});
+
+			// Transform data to match the expected format
+			interface Affirmation {
+				id: number;
+				content: string | null;
+				mood_type: string | null;
+			}
+
+			interface JournalEntry {
+				id: number;
+				user_id: number;
+				content: string;
+				mood: string;
+				affirmation_id: number | null;
+				entry_date: Date;
+				created_at: Date;
+				updated_at: Date;
+				affirmation?: Affirmation | null;
+			}
+
+			interface FormattedJournalEntry {
+				id: number;
+				user_id: number;
+				content: string;
+				mood: string;
+				affirmation_id: number | null;
+				entry_date: string;
+				created_at: string;
+				updated_at: string;
+				affirmation_content: string | null;
+				mood_type: string | null;
+			}
+
+			const formattedEntries: FormattedJournalEntry[] = entries.map(
+				(entry: JournalEntry) => ({
+					id: entry.id,
+					user_id: entry.user_id,
+					content: entry.content,
+					mood: entry.mood,
+					affirmation_id: entry.affirmation_id,
+					entry_date: entry.entry_date.toISOString().split('T')[0],
+					created_at: entry.created_at.toISOString(),
+					updated_at: entry.updated_at.toISOString(),
+					affirmation_content: entry.affirmation?.content || null,
+					mood_type: entry.affirmation?.mood_type || null,
+				})
 			);
 
-			console.log(`Retrieved ${entries.length} entries for user ${userId}`); // Debug log
-			res.status(200).json(entries);
+			console.log(
+				`Retrieved ${formattedEntries.length} entries for user ${userId}`
+			);
+			res.status(200).json(formattedEntries);
 		} catch (error) {
 			console.error('Journal entries fetch error:', error);
 			res.status(500).json({ error: 'Internal server error' });
@@ -107,28 +145,42 @@ export const registerJournalRoutes = (
 
 	// Get a specific journal entry by ID
 	app.get('/api/journal/:id', authenticateToken, async (req: any, res: any) => {
-		console.log(`GET /api/journal/${req.params.id} received`); // Debug log
+		console.log(`GET /api/journal/${req.params.id} received`);
 
 		try {
 			const userId = req.user.userId;
-			const entryId = req.params.id;
+			const entryId = parseInt(req.params.id);
 
 			// Get the entry with affirmation
-			const entries = await dbTemplate.query(
-				`SELECT j.*, a.content as affirmation_content, a.mood_type 
-         FROM journal_entries j 
-         LEFT JOIN affirmations a ON j.affirmation_id = a.id 
-         WHERE j.id = $1 AND j.user_id = $2`,
-				(row) => row,
-				entryId,
-				userId
-			);
+			const entry = await prisma.journalEntry.findUnique({
+				where: {
+					id: entryId,
+					user_id: userId,
+				},
+				include: {
+					affirmation: true,
+				},
+			});
 
-			if (entries.length === 0) {
+			if (!entry) {
 				return res.status(404).json({ error: 'Journal entry not found' });
 			}
 
-			res.status(200).json(entries[0]);
+			// Format the entry to match expected format
+			const formattedEntry = {
+				id: entry.id,
+				user_id: entry.user_id,
+				content: entry.content,
+				mood: entry.mood,
+				affirmation_id: entry.affirmation_id,
+				entry_date: entry.entry_date.toISOString().split('T')[0],
+				created_at: entry.created_at.toISOString(),
+				updated_at: entry.updated_at.toISOString(),
+				affirmation_content: entry.affirmation?.content || null,
+				mood_type: entry.affirmation?.mood_type || null,
+			};
+
+			res.status(200).json(formattedEntry);
 		} catch (error) {
 			console.error('Journal entry fetch error:', error);
 			res.status(500).json({ error: 'Internal server error' });
@@ -140,28 +192,82 @@ export const registerJournalRoutes = (
 		'/api/journal/date/:date',
 		authenticateToken,
 		async (req: any, res: any) => {
-			console.log(`GET /api/journal/date/${req.params.date} received`); // Debug log
+			console.log(`GET /api/journal/date/${req.params.date} received`);
 
 			try {
 				const userId = req.user.userId;
-				const entryDate = req.params.date; // Format: YYYY-MM-DD
+				const dateString = req.params.date; // Format: YYYY-MM-DD
+
+				// Create Date objects for the start and end of the day
+				const startDate = new Date(dateString + 'T00:00:00-06:00'); // -06:00 is MST
+				const endDate = new Date(dateString + 'T23:59:59-06:00'); // Set to next day
 
 				// Get entries for the specified date
-				const entries = await dbTemplate.query(
-					`SELECT j.*, a.content as affirmation_content, a.mood_type 
-         FROM journal_entries j 
-         LEFT JOIN affirmations a ON j.affirmation_id = a.id 
-         WHERE j.user_id = $1 AND j.entry_date = $2
-         ORDER BY j.created_at DESC`,
-					(row) => row,
-					userId,
-					entryDate
+				const entries = await prisma.journalEntry.findMany({
+					where: {
+						user_id: userId,
+						entry_date: {
+							gte: startDate,
+							lt: endDate,
+						},
+					},
+					include: {
+						affirmation: true,
+					},
+					orderBy: { created_at: 'desc' },
+				});
+
+				// Format entries to match expected format
+				interface Affirmation {
+					id: number;
+					content: string | null;
+					mood_type: string | null;
+				}
+
+				interface JournalEntry {
+					id: number;
+					user_id: number;
+					content: string;
+					mood: string;
+					affirmation_id: number | null;
+					entry_date: Date;
+					created_at: Date;
+					updated_at: Date;
+					affirmation?: Affirmation | null;
+				}
+
+				interface FormattedJournalEntry {
+					id: number;
+					user_id: number;
+					content: string;
+					mood: string;
+					affirmation_id: number | null;
+					entry_date: string;
+					created_at: string;
+					updated_at: string;
+					affirmation_content: string | null;
+					mood_type: string | null;
+				}
+
+				const formattedEntries: FormattedJournalEntry[] = entries.map(
+					(entry: JournalEntry) => ({
+						id: entry.id,
+						user_id: entry.user_id,
+						content: entry.content,
+						mood: entry.mood,
+						affirmation_id: entry.affirmation_id,
+						entry_date: entry.entry_date.toISOString().split('T')[0],
+						created_at: entry.created_at.toISOString(),
+						updated_at: entry.updated_at.toISOString(),
+						affirmation_content: entry.affirmation?.content || null,
+						mood_type: entry.affirmation?.mood_type || null,
+					})
 				);
 
 				console.log(
-					`Retrieved ${entries.length} entries for date ${entryDate}`
-				); // Debug log
-				res.status(200).json(entries);
+					`Retrieved ${formattedEntries.length} entries for date ${dateString}`
+				);
+				res.status(200).json(formattedEntries);
 			} catch (error) {
 				console.error('Journal entries by date fetch error:', error);
 				res.status(500).json({ error: 'Internal server error' });

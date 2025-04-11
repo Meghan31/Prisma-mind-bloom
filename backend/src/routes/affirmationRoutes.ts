@@ -1,7 +1,7 @@
 // src/routes/affirmationRoutes.ts
 import { Express } from 'express';
 import jwt from 'jsonwebtoken';
-import { DatabaseTemplate } from '../databaseSupport/databaseTemplate';
+import { prisma } from '../lib/prisma';
 
 // Middleware to verify JWT token
 const authenticateToken = (req: any, res: any, next: any) => {
@@ -22,10 +22,7 @@ const authenticateToken = (req: any, res: any, next: any) => {
 	}
 };
 
-export const registerAffirmationRoutes = (
-	app: Express,
-	dbTemplate: DatabaseTemplate
-) => {
+export const registerAffirmationRoutes = (app: Express) => {
 	// Get today's affirmation for a specific mood
 	app.get(
 		'/api/affirmation/today',
@@ -36,19 +33,27 @@ export const registerAffirmationRoutes = (
 				const mood = req.query.mood || 'Reflective';
 
 				// Get a random affirmation based on mood
-				const affirmations = await dbTemplate.query(
-					'SELECT * FROM affirmations WHERE mood_type = $1 ORDER BY RANDOM() LIMIT 1',
-					(row) => row,
-					mood
-				);
+				const affirmations = await prisma.affirmation.findMany({
+					where: {
+						mood_type: mood,
+					},
+					orderBy: {
+						id: 'asc', // For deterministic ordering, replace with something more random if needed
+					},
+					take: 1,
+				});
 
 				if (affirmations.length === 0) {
 					// If no affirmation for specific mood, try to get a fallback
-					const fallbackAffirmations = await dbTemplate.query(
-						'SELECT * FROM affirmations WHERE mood_type = $1 ORDER BY RANDOM() LIMIT 1',
-						(row) => row,
-						'Reflective'
-					);
+					const fallbackAffirmations = await prisma.affirmation.findMany({
+						where: {
+							mood_type: 'Reflective',
+						},
+						orderBy: {
+							id: 'asc',
+						},
+						take: 1,
+					});
 
 					if (fallbackAffirmations.length === 0) {
 						return res.status(404).json({ error: 'No affirmations found' });
@@ -74,11 +79,11 @@ export const registerAffirmationRoutes = (
 				const mood = req.params.mood;
 
 				// Get all affirmations for the mood
-				const affirmations = await dbTemplate.query(
-					'SELECT * FROM affirmations WHERE mood_type = $1',
-					(row) => row,
-					mood
-				);
+				const affirmations = await prisma.affirmation.findMany({
+					where: {
+						mood_type: mood,
+					},
+				});
 
 				if (affirmations.length === 0) {
 					return res

@@ -2,7 +2,7 @@
 import { Button } from '@/components/ui/button';
 import JournalCalendar from '@/sections/JournalCalendar';
 import { motion } from 'framer-motion';
-import { Home, Moon, Sun } from 'lucide-react';
+import { Home } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { authAPI } from '../../api';
@@ -17,7 +17,7 @@ type User = {
 
 const CalendarPage = () => {
 	const [user, setUser] = useState<User | null>(null);
-	const [darkMode, setDarkMode] = useState(false);
+	// const [darkMode, setDarkMode] = useState(false);
 
 	useEffect(() => {
 		const token = localStorage.getItem('token');
@@ -61,7 +61,7 @@ const CalendarPage = () => {
 	}
 
 	return (
-		<div className={`whole ${darkMode ? 'dark' : ''}`}>
+		<div>
 			<div className="nav-bar">
 				<motion.h1
 					className="text-4xl font-bold text-gradient  "
@@ -81,9 +81,9 @@ const CalendarPage = () => {
 							<span style={{ color: 'black' }}>Return Home</span>
 						</Button>
 					</Link>
-					<Button variant="ghost" onClick={() => setDarkMode(!darkMode)}>
+					{/* <Button variant="ghost" onClick={() => setDarkMode(!darkMode)}>
 						{darkMode ? <Sun size={20} /> : <Moon size={20} />}
-					</Button>
+					</Button> */}
 				</div>
 			</div>
 			<div className="calendar-container">
