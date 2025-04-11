@@ -9,6 +9,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.registerJournalRoutes = void 0;
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
+const prisma_1 = require("../lib/prisma");
 // Middleware to verify JWT token
 const authenticateToken = (req, res, next) => {
     const authHeader = req.headers['authorization'];
@@ -26,11 +27,11 @@ const authenticateToken = (req, res, next) => {
         return res.status(403).json({ error: 'Invalid token.' });
     }
 };
-const registerJournalRoutes = (app, dbTemplate) => {
-    console.log('Registering journal routes'); // Debug log
+const registerJournalRoutes = (app) => {
+    console.log('Registering journal routes');
     // Create a new journal entry
     app.post('/api/journal', authenticateToken, async (req, res) => {
-        console.log('POST /api/journal received:', req.body); // Debug log
+        console.log('POST /api/journal received:', req.body);
         try {
             const { content, mood } = req.body;
             const userId = req.user.userId;
@@ -39,18 +40,26 @@ const registerJournalRoutes = (app, dbTemplate) => {
                 return res.status(400).json({ error: 'Content and mood are required' });
             }
             // Get a random affirmation based on mood
-            const affirmations = await dbTemplate.query('SELECT * FROM affirmations WHERE mood_type = $1 ORDER BY RANDOM() LIMIT 1', (row) => row, mood);
-            const affirmation = affirmations.length > 0 ? affirmations[0] : null;
-            const affirmationId = affirmation ? affirmation.id : null;
+            const affirmation = await prisma_1.prisma.affirmation.findFirst({
+                where: { mood_type: mood },
+                orderBy: { id: 'asc' }, // Using asc for deterministic ordering, for random use a different approach
+                take: 1,
+            });
             // Insert journal entry
-            await dbTemplate.execute('INSERT INTO journal_entries (user_id, content, mood, affirmation_id, entry_date) VALUES ($1, $2, $3, $4, CURRENT_DATE)', userId, content, mood, affirmationId);
-            // Get the newly created entry
-            const entries = await dbTemplate.query('SELECT * FROM journal_entries WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1', (row) => row, userId);
+            const entry = await prisma_1.prisma.journalEntry.create({
+                data: {
+                    user_id: userId,
+                    content,
+                    mood,
+                    affirmation_id: affirmation?.id || null,
+                    entry_date: new Date(),
+                },
+            });
             // Return the entry with the affirmation
             res.status(201).json({
                 message: 'Journal entry created successfully',
-                entry: entries[0],
-                affirmation: affirmation ? affirmation.content : null,
+                entry,
+                affirmation: affirmation?.content || null,
             });
         }
         catch (error) {
@@ -60,17 +69,31 @@ const registerJournalRoutes = (app, dbTemplate) => {
     });
     // Get all journal entries for the logged-in user
     app.get('/api/journal', authenticateToken, async (req, res) => {
-        console.log('GET /api/journal received'); // Debug log
+        console.log('GET /api/journal received');
         try {
             const userId = req.user.userId;
             // Get all entries for the user with affirmations
-            const entries = await dbTemplate.query(`SELECT j.*, a.content as affirmation_content, a.mood_type 
-         FROM journal_entries j 
-         LEFT JOIN affirmations a ON j.affirmation_id = a.id 
-         WHERE j.user_id = $1 
-         ORDER BY j.entry_date DESC`, (row) => row, userId);
-            console.log(`Retrieved ${entries.length} entries for user ${userId}`); // Debug log
-            res.status(200).json(entries);
+            const entries = await prisma_1.prisma.journalEntry.findMany({
+                where: { user_id: userId },
+                include: {
+                    affirmation: true,
+                },
+                orderBy: { entry_date: 'desc' },
+            });
+            const formattedEntries = entries.map((entry) => ({
+                id: entry.id,
+                user_id: entry.user_id,
+                content: entry.content,
+                mood: entry.mood,
+                affirmation_id: entry.affirmation_id,
+                entry_date: entry.entry_date.toISOString().split('T')[0],
+                created_at: entry.created_at.toISOString(),
+                updated_at: entry.updated_at.toISOString(),
+                affirmation_content: entry.affirmation?.content || null,
+                mood_type: entry.affirmation?.mood_type || null,
+            }));
+            console.log(`Retrieved ${formattedEntries.length} entries for user ${userId}`);
+            res.status(200).json(formattedEntries);
         }
         catch (error) {
             console.error('Journal entries fetch error:', error);
@@ -79,19 +102,37 @@ const registerJournalRoutes = (app, dbTemplate) => {
     });
     // Get a specific journal entry by ID
     app.get('/api/journal/:id', authenticateToken, async (req, res) => {
-        console.log(`GET /api/journal/${req.params.id} received`); // Debug log
+        console.log(`GET /api/journal/${req.params.id} received`);
         try {
             const userId = req.user.userId;
-            const entryId = req.params.id;
+            const entryId = parseInt(req.params.id);
             // Get the entry with affirmation
-            const entries = await dbTemplate.query(`SELECT j.*, a.content as affirmation_content, a.mood_type 
-         FROM journal_entries j 
-         LEFT JOIN affirmations a ON j.affirmation_id = a.id 
-         WHERE j.id = $1 AND j.user_id = $2`, (row) => row, entryId, userId);
-            if (entries.length === 0) {
+            const entry = await prisma_1.prisma.journalEntry.findUnique({
+                where: {
+                    id: entryId,
+                    user_id: userId,
+                },
+                include: {
+                    affirmation: true,
+                },
+            });
+            if (!entry) {
                 return res.status(404).json({ error: 'Journal entry not found' });
             }
-            res.status(200).json(entries[0]);
+            // Format the entry to match expected format
+            const formattedEntry = {
+                id: entry.id,
+                user_id: entry.user_id,
+                content: entry.content,
+                mood: entry.mood,
+                affirmation_id: entry.affirmation_id,
+                entry_date: entry.entry_date.toISOString().split('T')[0],
+                created_at: entry.created_at.toISOString(),
+                updated_at: entry.updated_at.toISOString(),
+                affirmation_content: entry.affirmation?.content || null,
+                mood_type: entry.affirmation?.mood_type || null,
+            };
+            res.status(200).json(formattedEntry);
         }
         catch (error) {
             console.error('Journal entry fetch error:', error);
@@ -100,18 +141,42 @@ const registerJournalRoutes = (app, dbTemplate) => {
     });
     // Get entries by date
     app.get('/api/journal/date/:date', authenticateToken, async (req, res) => {
-        console.log(`GET /api/journal/date/${req.params.date} received`); // Debug log
+        console.log(`GET /api/journal/date/${req.params.date} received`);
         try {
             const userId = req.user.userId;
-            const entryDate = req.params.date; // Format: YYYY-MM-DD
+            const dateString = req.params.date; // Format: YYYY-MM-DD
+            // Create Date objects for the start and end of the day
+            const startDate = new Date(dateString);
+            const endDate = new Date(dateString);
+            endDate.setDate(endDate.getDate() + 1); // Set to next day
             // Get entries for the specified date
-            const entries = await dbTemplate.query(`SELECT j.*, a.content as affirmation_content, a.mood_type 
-         FROM journal_entries j 
-         LEFT JOIN affirmations a ON j.affirmation_id = a.id 
-         WHERE j.user_id = $1 AND j.entry_date = $2
-         ORDER BY j.created_at DESC`, (row) => row, userId, entryDate);
-            console.log(`Retrieved ${entries.length} entries for date ${entryDate}`); // Debug log
-            res.status(200).json(entries);
+            const entries = await prisma_1.prisma.journalEntry.findMany({
+                where: {
+                    user_id: userId,
+                    entry_date: {
+                        gte: startDate,
+                        lt: endDate,
+                    },
+                },
+                include: {
+                    affirmation: true,
+                },
+                orderBy: { created_at: 'desc' },
+            });
+            const formattedEntries = entries.map((entry) => ({
+                id: entry.id,
+                user_id: entry.user_id,
+                content: entry.content,
+                mood: entry.mood,
+                affirmation_id: entry.affirmation_id,
+                entry_date: entry.entry_date.toISOString().split('T')[0],
+                created_at: entry.created_at.toISOString(),
+                updated_at: entry.updated_at.toISOString(),
+                affirmation_content: entry.affirmation?.content || null,
+                mood_type: entry.affirmation?.mood_type || null,
+            }));
+            console.log(`Retrieved ${formattedEntries.length} entries for date ${dateString}`);
+            res.status(200).json(formattedEntries);
         }
         catch (error) {
             console.error('Journal entries by date fetch error:', error);
